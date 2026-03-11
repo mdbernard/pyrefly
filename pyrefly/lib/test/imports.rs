@@ -1401,3 +1401,76 @@ from test.foo import bar
 assert_type(bar, int)
 "#,
 );
+
+/// Creates the pkgutil namespace directory structure for two cases.
+///
+/// Case A – two RegularPackages (both roots have `ns/__init__.py`):
+///   root0/ns/__init__.py, root0/ns/bar/__init__.py
+///   root1/ns/__init__.py, root1/ns/baz/__init__.py
+///
+/// Case B – RegularPackage + NamespacePackage (only root1 has `ns/__init__.py`):
+///   root0/ns/baz/__init__.py              (no ns/__init__.py → namespace)
+///   root1/ns/__init__.py, root1/ns/bar/__init__.py
+fn write_pkgutil_tree(root: &std::path::Path, with_root0_init: bool) {
+    std::fs::create_dir_all(root.join("root0/ns/baz")).unwrap();
+    std::fs::create_dir_all(root.join("root1/ns/bar")).unwrap();
+    if with_root0_init {
+        std::fs::write(root.join("root0/ns/__init__.py"), "").unwrap();
+    }
+    std::fs::write(
+        root.join("root0/ns/baz/__init__.py"),
+        "def helper() -> int: return 0\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("root1/ns/__init__.py"), "").unwrap();
+    std::fs::write(root.join("root1/ns/bar/__init__.py"), "class Foo: ...\n").unwrap();
+}
+
+#[test]
+fn test_pkgutil_namespace_package_multi_regular_root() {
+    // Case A: Both search roots have ns/__init__.py. The finder should accumulate
+    // both into a single RegularPackage with multiple roots, making submodules from
+    // both roots importable (the historical behavior was to stop at root0 and miss root1).
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path();
+    write_pkgutil_tree(root, true);
+
+    let mut env =
+        TestEnv::new().with_site_package_paths(vec![root.join("root0"), root.join("root1")]);
+    env.add_with_path(
+        "main",
+        "main.py",
+        "from ns.bar import Foo\nfrom ns.baz import helper\n",
+    );
+    let (state, handle_fn) = env.to_state();
+    state
+        .transaction()
+        .get_errors(&[handle_fn("main")])
+        .check_against_expectations()
+        .unwrap();
+}
+
+#[test]
+fn test_pkgutil_namespace_package_regular_plus_namespace_root() {
+    // Case B: root0 has no ns/__init__.py (NamespacePackage) while root1 has one
+    // (RegularPackage). The regular package wins for the `ns` package itself, but
+    // the namespace root is merged into the search roots so ns.baz (in root0) is
+    // also reachable.
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path();
+    write_pkgutil_tree(root, false);
+
+    let mut env =
+        TestEnv::new().with_site_package_paths(vec![root.join("root0"), root.join("root1")]);
+    env.add_with_path(
+        "main",
+        "main.py",
+        "from ns.bar import Foo\nfrom ns.baz import helper\n",
+    );
+    let (state, handle_fn) = env.to_state();
+    state
+        .transaction()
+        .get_errors(&[handle_fn("main")])
+        .check_against_expectations()
+        .unwrap();
+}
