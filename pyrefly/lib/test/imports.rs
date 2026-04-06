@@ -1411,26 +1411,30 @@ assert_type(bar, int)
 /// Case B – RegularPackage + NamespacePackage (only root1 has `ns/__init__.py`):
 ///   root0/ns/baz/__init__.py              (no ns/__init__.py → namespace)
 ///   root1/ns/__init__.py, root1/ns/bar/__init__.py
+const PKGUTIL_INIT: &str =
+    "from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n";
+
 fn write_pkgutil_tree(root: &std::path::Path, with_root0_init: bool) {
     std::fs::create_dir_all(root.join("root0/ns/baz")).unwrap();
     std::fs::create_dir_all(root.join("root1/ns/bar")).unwrap();
     if with_root0_init {
-        std::fs::write(root.join("root0/ns/__init__.py"), "").unwrap();
+        // Both roots use the pkgutil pattern, making them legacy namespace packages.
+        std::fs::write(root.join("root0/ns/__init__.py"), PKGUTIL_INIT).unwrap();
     }
     std::fs::write(
         root.join("root0/ns/baz/__init__.py"),
         "def helper() -> int: return 0\n",
     )
     .unwrap();
-    std::fs::write(root.join("root1/ns/__init__.py"), "").unwrap();
+    // root1's __init__.py uses the pkgutil pattern to extend __path__.
+    std::fs::write(root.join("root1/ns/__init__.py"), PKGUTIL_INIT).unwrap();
     std::fs::write(root.join("root1/ns/bar/__init__.py"), "class Foo: ...\n").unwrap();
 }
 
 #[test]
 fn test_pkgutil_namespace_package_multi_regular_root() {
-    // Case A: Both search roots have ns/__init__.py. The finder should accumulate
-    // both into a single RegularPackage with multiple roots, making submodules from
-    // both roots importable (the historical behavior was to stop at root0 and miss root1).
+    // Case A: Both search roots have ns/__init__.py with pkgutil.extend_path. Both are
+    // LegacyNamespacePackages, so submodules from both roots are importable.
     let tempdir = tempfile::tempdir().unwrap();
     let root = tempdir.path();
     write_pkgutil_tree(root, true);
@@ -1452,10 +1456,9 @@ fn test_pkgutil_namespace_package_multi_regular_root() {
 
 #[test]
 fn test_pkgutil_namespace_package_regular_plus_namespace_root() {
-    // Case B: root0 has no ns/__init__.py (NamespacePackage) while root1 has one
-    // (RegularPackage). The regular package wins for the `ns` package itself, but
-    // the namespace root is merged into the search roots so ns.baz (in root0) is
-    // also reachable.
+    // Case B: root0 has no ns/__init__.py (namespace dir only) while root1 has a
+    // LegacyNamespacePackage ns/__init__.py. The LNP wins for the `ns` package itself,
+    // and absorbs root0's namespace directory, so ns.baz (in root0) is also reachable.
     let tempdir = tempfile::tempdir().unwrap();
     let root = tempdir.path();
     write_pkgutil_tree(root, false);
